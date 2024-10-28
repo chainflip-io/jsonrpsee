@@ -372,7 +372,13 @@ impl RpcDescription {
 		};
 
 		// Code to decode sequence of parameters from a JSON array.
-		let decode_array = {
+		let decode_array = if params.iter().any(|arg| arg.flatten) {
+			// Flatten not supported for arrays.
+			quote! {
+				let e = #reexports::array_unsupported_error();
+				#error_ret
+			}
+		} else {
 			let decode_fields = params.iter().map(|RpcFnArg { arg_pat, ty, .. }| {
 				let is_option = is_option(ty);
 				let next_method = if is_option { quote!(optional_next) } else { quote!(next) };
@@ -418,10 +424,12 @@ impl RpcDescription {
 				let serde_alias: Attribute = syn::parse_quote! {
 					#[serde(#alias)]
 				};
+				let serde_flatten = if fn_arg.flatten { quote!(#[serde(flatten)]) } else { quote!() };
 
 				quote! {
 					#serde_alias
 					#serde_rename
+					#serde_flatten
 					#arg_pat: #ty,
 				}
 			});

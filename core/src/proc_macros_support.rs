@@ -1,5 +1,13 @@
 use jsonrpsee_types::ErrorObjectOwned;
 
+pub fn array_unsupported_error() -> ErrorObjectOwned {
+	ErrorObjectOwned::owned(
+		jsonrpsee_types::ErrorCode::ParseError.code(),
+		"Array parameters are not supported. Use a parameter Object instead.",
+		None::<()>,
+	)
+}
+
 // We're marking functions on the error paths as #[cold] to both reduce chance of inlining and to
 // make the generated assembly slightly better.
 
