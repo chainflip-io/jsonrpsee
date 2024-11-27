@@ -354,62 +354,95 @@ impl RpcDescription {
 		let sub_err = self.jrps_server_item(quote! { SubscriptionCloseResponse });
 		let response_payload = self.jrps_server_item(quote! { ResponsePayload });
 		let tokio = self.jrps_server_item(quote! { core::__reexports::tokio });
+		let flatten_trait = self.jrps_server_item(quote! { types::FlattenToSequence });
 
 		// Code to decode sequence of parameters from a JSON array.
 		let decode_array = {
-			let decode_fields = params.iter().map(|RpcFnArg { arg_pat, ty, .. }| match (is_option(ty), sub.as_ref()) {
-				(true, Some(pending)) => {
-					quote! {
-						let #arg_pat: #ty = match seq.optional_next() {
-							Ok(v) => v,
-							Err(e) => {
-								#tracing::debug!(concat!("Error parsing optional \"", stringify!(#arg_pat), "\" as \"", stringify!(#ty), "\": {:?}"), e);
-								#tokio::spawn(#pending.reject(e));
-								return #sub_err::None;
+			if params.iter().any(|arg| arg.flatten) {
+				assert!(params.len() == 1);
+				let RpcFnArg { arg_pat, ty, .. } = &params[0];
+				assert!(!is_option(ty));
+				match sub.as_ref() {
+					Some(pending) => {
+						quote! {
+							use #flatten_trait;
+							match params.parse_type_from_array::<Option<#ty>>() {
+								Ok(v) => v,
+								Err(e) => {
+									#tracing::debug!(concat!("Error parsing optional \"", stringify!(#arg_pat), "\" as \"", stringify!(#ty), "\": {:?}"), e);
+									#tokio::spawn(#pending.reject(e));
+									return #sub_err::None;
+								}
 							}
-						};
+						}
+					}
+					None => {
+						quote! {
+							match params.parse_type_from_array::<#ty>() {
+								Ok(v) => v,
+								Err(e) => {
+									#tracing::debug!(concat!("Error parsing \"", stringify!(#arg_pat), "\" as \"", stringify!(#ty), "\": {:?}"), e);
+									return #response_payload::error(e);
+								}
+							}
+						}
 					}
 				}
-				(true, None) => {
-					quote! {
-						let #arg_pat: #ty = match seq.optional_next() {
-							Ok(v) => v,
-							Err(e) => {
-								#tracing::debug!(concat!("Error parsing optional \"", stringify!(#arg_pat), "\" as \"", stringify!(#ty), "\": {:?}"), e);
-								return #response_payload::error(e);
-							}
-						};
-					}
-				}
-				(false, Some(pending)) => {
-					quote! {
-						let #arg_pat: #ty = match seq.next() {
-							Ok(v) => v,
-							Err(e) => {
-								#tracing::debug!(concat!("Error parsing optional \"", stringify!(#arg_pat), "\" as \"", stringify!(#ty), "\": {:?}"), e);
-								#tokio::spawn(#pending.reject(e));
-								return #sub_err::None;
-							}
-						};
-					}
-				}
-				(false, None) => {
-					quote! {
-						let #arg_pat: #ty = match seq.next() {
-							Ok(v) => v,
-							Err(e) => {
-								#tracing::debug!(concat!("Error parsing \"", stringify!(#arg_pat), "\" as \"", stringify!(#ty), "\": {:?}"), e);
-								return #response_payload::error(e);
-							}
-						};
-					}
-				}
-			});
+			} else {
+				let decode_fields = params.iter().map(|RpcFnArg { arg_pat, ty, .. }| match (is_option(ty), sub.as_ref()) {
+    				(true, Some(pending)) => {
+    					quote! {
+    						let #arg_pat: #ty = match seq.optional_next() {
+    							Ok(v) => v,
+    							Err(e) => {
+    								#tracing::debug!(concat!("Error parsing optional \"", stringify!(#arg_pat), "\" as \"", stringify!(#ty), "\": {:?}"), e);
+    								#tokio::spawn(#pending.reject(e));
+    								return #sub_err::None;
+    							}
+    						};
+    					}
+    				}
+    				(true, None) => {
+    					quote! {
+    						let #arg_pat: #ty = match seq.optional_next() {
+    							Ok(v) => v,
+    							Err(e) => {
+    								#tracing::debug!(concat!("Error parsing optional \"", stringify!(#arg_pat), "\" as \"", stringify!(#ty), "\": {:?}"), e);
+    								return #response_payload::error(e);
+    							}
+    						};
+    					}
+    				}
+    				(false, Some(pending)) => {
+    					quote! {
+    						let #arg_pat: #ty = match seq.next() {
+    							Ok(v) => v,
+    							Err(e) => {
+    								#tracing::debug!(concat!("Error parsing optional \"", stringify!(#arg_pat), "\" as \"", stringify!(#ty), "\": {:?}"), e);
+    								#tokio::spawn(#pending.reject(e));
+    								return #sub_err::None;
+    							}
+    						};
+    					}
+    				}
+    				(false, None) => {
+    					quote! {
+    						let #arg_pat: #ty = match seq.next() {
+    							Ok(v) => v,
+    							Err(e) => {
+    								#tracing::debug!(concat!("Error parsing \"", stringify!(#arg_pat), "\" as \"", stringify!(#ty), "\": {:?}"), e);
+    								return #response_payload::error(e);
+    							}
+    						};
+    					}
+    				}
+    			});
 
-			quote! {
-				let mut seq = params.sequence();
-				#(#decode_fields);*
-				(#params_fields)
+				quote! {
+					let mut seq = params.sequence();
+					#(#decode_fields);*
+					(#params_fields)
+				}
 			}
 		};
 
@@ -437,10 +470,12 @@ impl RpcDescription {
 				let serde_alias: Attribute = syn::parse_quote! {
 					#[serde(#alias)]
 				};
+				let serde_flatten = if fn_arg.flatten { quote!(#[serde(flatten)]) } else { quote!() };
 
 				quote! {
 					#serde_alias
 					#serde_rename
+					#serde_flatten
 					#arg_pat: #ty,
 				}
 			});

@@ -30,7 +30,7 @@
 use std::fmt;
 
 use beef::Cow;
-use serde::de::{self, Deserializer, Unexpected, Visitor};
+use serde::de::{self, DeserializeOwned, Deserializer, Unexpected, Visitor};
 use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -125,6 +125,16 @@ impl<'a> Params<'a> {
 		// NOTE(niklasad1): Option::None is serialized as `null` so we provide that here.
 		let params = self.0.as_ref().map(AsRef::as_ref).unwrap_or("null");
 		serde_json::from_str(params).map_err(invalid_params)
+	}
+
+	/// Attempt to parse all parameters from an array via flattened type for `T`.
+	pub fn parse_type_from_array<T: TupleConversion>(&'a self) -> Result<T, ErrorObjectOwned>
+	where
+		T: Deserialize<'a>,
+	{
+		// NOTE(niklasad1): Option::None is serialized as `null` so we provide that here.
+		let params = self.0.as_ref().map(AsRef::as_ref).unwrap_or("null");
+		serde_json::from_str::<T::Tuple>(params).map(T::from_tuple).map_err(invalid_params)
 	}
 
 	/// Attempt to parse parameters as an array of a single value of type `T`, and returns that value.
@@ -254,6 +264,66 @@ impl<'a> ParamsSequence<'a> {
 			Some(result) => result,
 			None => Ok(None),
 		}
+	}
+}
+
+/// This is used to convert a struct into a tuple that can be serialized/deserialized from a JSON array.
+///
+/// Must be implemented for any types that use `argument(flatten)`.
+pub trait TupleConversion: Sized {
+	/// Should be a tuple that can be serialized/deserialized from a JSON array.
+	///
+	/// The fields should match the order and types of the struct fields.
+	///
+	/// # Example
+	///
+	/// ```rust
+	/// use serde::{Serialize, Deserialize};
+	/// use serde_json::json;
+	/// use jsonrpsee::types::FlattenToSequence;
+	///
+	/// #[derive(Serialize, Deserialize, Debug, PartialEq)]
+	/// struct MyStruct {
+	///     a: u32,
+	///     b: String,
+	/// }
+	///
+	/// impl FlattenToSequence for MyStruct {
+	///     type SequenceTuple = (u32, String);
+	///
+	/// 	fn flatten_to_sequence_tuple(&self) -> Self::SequenceTuple {
+	/// 		(self.a, self.b.clone())
+	/// 	}
+	///
+	/// 	fn from_sequence_tuple((a, b): Self::SequenceTuple) -> Self {
+	/// 		Self { a, b }
+	/// 	}
+	/// }
+	///
+	/// let my_struct = MyStruct { a: 1, b: "hello".to_string() };
+	/// let json = serde_json::to_value(my_struct.flatten_to_sequence_tuple()).unwrap();
+	/// assert_eq!(json, json!([1, "hello"]));
+	/// ```
+	type Tuple: Serialize + DeserializeOwned;
+
+	/// Flatten the struct into a tuple.
+	fn flatten_to_tuple(&self) -> Self::Tuple;
+
+	/// Convert a tuple to a the struct.
+	fn from_tuple(tuple: Self::Tuple) -> Self;
+}
+
+impl<T> TupleConversion for Option<T>
+where
+	T: TupleConversion,
+{
+	type Tuple = Option<T::Tuple>;
+
+	fn flatten_to_tuple(&self) -> Self::Tuple {
+		self.as_ref().map(T::flatten_to_tuple)
+	}
+	fn from_tuple(tuple: Self::Tuple) -> Self {
+		tuple.map(T::from_tuple)
 	}
 }
 
