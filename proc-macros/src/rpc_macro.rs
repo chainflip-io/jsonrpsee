@@ -44,27 +44,31 @@ use syn::{punctuated::Punctuated, Attribute, Token};
 pub struct RpcFnArg {
 	pub(crate) arg_pat: syn::PatIdent,
 	rename_to: Option<String>,
+	pub flatten: bool,
 	pub(crate) ty: syn::Type,
 }
 
 impl RpcFnArg {
 	pub fn from_arg_attrs(arg_pat: syn::PatIdent, ty: syn::Type, attrs: &mut Vec<syn::Attribute>) -> syn::Result<Self> {
 		let mut rename_to = None;
+		let mut flatten = false;
 
 		if let Some(attr) = find_attr(attrs, "argument") {
-			let [rename] = AttributeMeta::parse(attr.clone())?.retain(["rename"])?;
+			let attrs = AttributeMeta::parse(attr.clone())?;
+			let [rename, flatten_attr] = attrs.retain(["rename", "flatten"])?;
 
 			let rename = optional(rename, Argument::string)?;
 
 			if let Some(rename) = rename {
 				rename_to = Some(rename);
 			}
+			flatten = optional(flatten_attr, Argument::flag)?.is_some();
 		}
 
 		// remove argument attribute after inspection
 		attrs.retain(|attr| !attr.meta.path().is_ident("argument"));
 
-		Ok(Self { arg_pat, rename_to, ty })
+		Ok(Self { arg_pat, rename_to, flatten, ty })
 	}
 
 	/// Return the pattern identifier of the argument.
@@ -137,6 +141,13 @@ impl RpcMethod {
 				},
 			})
 			.collect::<Result<_, _>>()?;
+
+		if params.iter().any(|arg| arg.flatten) && params.len() > 1 {
+			return Err(syn::Error::new(
+				method.sig.span(),
+				"argument(flatten) is not supported for methods with multiple arguments",
+			));
+		}
 
 		let returns = match method.sig.output.clone() {
 			syn::ReturnType::Default => None,
