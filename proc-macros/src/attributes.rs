@@ -41,7 +41,7 @@ pub(crate) struct Argument {
 	pub tokens: TokenStream2,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParamKind {
 	Array,
 	Map,

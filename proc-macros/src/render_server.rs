@@ -145,7 +145,7 @@ impl RpcDescription {
 				// provided `Params` object.
 				// `params_seq` is the comma-delimited sequence of parameters we're passing to the rust function
 				// called..
-				let (parsing, params_seq) = self.render_params_decoding(&method.params, None);
+				let (parsing, params_seq) = self.render_params_decoding(&method.params, method.deny_array, None);
 
 				let into_response = self.jrps_server_item(quote! { IntoResponse });
 
@@ -206,7 +206,7 @@ impl RpcDescription {
 				// provided `Params` object.
 				// `params_seq` is the comma-delimited sequence of parameters.
 				let pending = proc_macro2::Ident::new("pending", rust_method_name.span());
-				let (parsing, params_seq) = self.render_params_decoding(&sub.params, Some(pending));
+				let (parsing, params_seq) = self.render_params_decoding(&sub.params, false, Some(pending));
 				let sub_err = self.jrps_server_item(quote! { SubscriptionCloseResponse });
 				let into_sub_response = self.jrps_server_item(quote! { IntoSubscriptionCloseResponse });
 
@@ -342,6 +342,7 @@ impl RpcDescription {
 	fn render_params_decoding(
 		&self,
 		params: &[RpcFnArg],
+		deny_array: bool,
 		sub: Option<proc_macro2::Ident>,
 	) -> (TokenStream2, TokenStream2) {
 		if params.is_empty() {
@@ -353,43 +354,56 @@ impl RpcDescription {
 		let tracing = self.jrps_server_item(quote! { tracing });
 		let sub_err = self.jrps_server_item(quote! { SubscriptionCloseResponse });
 		let response_payload = self.jrps_server_item(quote! { ResponsePayload });
+		let error_object = self.jrps_server_item(quote! { types::ErrorObject });
+		let error_code = self.jrps_server_item(quote! { types::ErrorCode });
 		let tokio = self.jrps_server_item(quote! { core::__reexports::tokio });
 		let flatten_trait = self.jrps_server_item(quote! { types::FlattenToSequence });
 
 		// Code to decode sequence of parameters from a JSON array.
 		let decode_array = {
-			if params.iter().any(|arg| arg.flatten) {
-				assert!(params.len() == 1);
-				let RpcFnArg { arg_pat, ty, .. } = &params[0];
-				assert!(!is_option(ty));
-				match sub.as_ref() {
-					Some(pending) => {
-						quote! {
-							use #flatten_trait;
-							match params.parse_type_from_array::<Option<#ty>>() {
-								Ok(v) => v,
-								Err(e) => {
-									#tracing::debug!(concat!("Error parsing optional \"", stringify!(#arg_pat), "\" as \"", stringify!(#ty), "\": {:?}"), e);
-									#tokio::spawn(#pending.reject(e));
-									return #sub_err::None;
-								}
-							}
-						}
-					}
-					None => {
-						quote! {
-							match params.parse_type_from_array::<#ty>() {
-								Ok(v) => v,
-								Err(e) => {
-									#tracing::debug!(concat!("Error parsing \"", stringify!(#arg_pat), "\" as \"", stringify!(#ty), "\": {:?}"), e);
-									return #response_payload::error(e);
-								}
-							}
-						}
-					}
+			if deny_array {
+				quote! {
+					return #response_payload::error(
+						#error_object::owned(
+							#error_code::InvalidParams.code(),
+							"Array params are not supported for this method.",
+							None::<()>,
+						)
+					);
 				}
 			} else {
-				let decode_fields = params.iter().map(|RpcFnArg { arg_pat, ty, .. }| match (is_option(ty), sub.as_ref()) {
+				if params.iter().any(|arg| arg.flatten) {
+					assert!(params.len() == 1);
+					let RpcFnArg { arg_pat, ty, .. } = &params[0];
+					assert!(!is_option(ty));
+					match sub.as_ref() {
+						Some(pending) => {
+							quote! {
+								use #flatten_trait;
+								match params.parse_type_from_array::<Option<#ty>>() {
+									Ok(v) => v,
+									Err(e) => {
+										#tracing::debug!(concat!("Error parsing optional \"", stringify!(#arg_pat), "\" as \"", stringify!(#ty), "\": {:?}"), e);
+										#tokio::spawn(#pending.reject(e));
+										return #sub_err::None;
+									}
+								}
+							}
+						}
+						None => {
+							quote! {
+								match params.parse_type_from_array::<#ty>() {
+									Ok(v) => v,
+									Err(e) => {
+										#tracing::debug!(concat!("Error parsing \"", stringify!(#arg_pat), "\" as \"", stringify!(#ty), "\": {:?}"), e);
+										return #response_payload::error(e);
+									}
+								}
+							}
+						}
+					}
+				} else {
+					let decode_fields = params.iter().map(|RpcFnArg { arg_pat, ty, .. }| match (is_option(ty), sub.as_ref()) {
     				(true, Some(pending)) => {
     					quote! {
     						let #arg_pat: #ty = match seq.optional_next() {
@@ -438,10 +452,11 @@ impl RpcDescription {
     				}
     			});
 
-				quote! {
-					let mut seq = params.sequence();
-					#(#decode_fields);*
-					(#params_fields)
+					quote! {
+						let mut seq = params.sequence();
+						#(#decode_fields);*
+						(#params_fields)
+					}
 				}
 			}
 		};

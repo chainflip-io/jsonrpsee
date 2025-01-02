@@ -133,7 +133,7 @@ impl<'a> Params<'a> {
 		T: Deserialize<'a>,
 	{
 		// NOTE(niklasad1): Option::None is serialized as `null` so we provide that here.
-		let params = self.0.as_ref().map(AsRef::as_ref).unwrap_or("null");
+		let params = self.0.as_ref().map(AsRef::as_ref).unwrap_or("[null]");
 		serde_json::from_str::<T::ArrayTuple>(params).map(T::from_array_tuple).map_err(invalid_params)
 	}
 

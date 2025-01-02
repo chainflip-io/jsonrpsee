@@ -97,18 +97,24 @@ pub struct RpcMethod {
 	pub signature: syn::TraitItemFn,
 	pub aliases: Vec<String>,
 	pub with_extensions: bool,
+	pub deny_array: bool,
 }
 
 impl RpcMethod {
 	pub fn from_item(attr: Attribute, mut method: syn::TraitItemFn) -> syn::Result<Self> {
-		let [aliases, blocking, name, param_kind, with_extensions] =
-			AttributeMeta::parse(attr)?.retain(["aliases", "blocking", "name", "param_kind", "with_extensions"])?;
+		let [aliases, blocking, name, param_kind, with_extensions, deny_array] = AttributeMeta::parse(attr)?
+			.retain(["aliases", "blocking", "name", "param_kind", "with_extensions", "deny_array"])?;
 
 		let aliases = parse_aliases(aliases)?;
 		let blocking = optional(blocking, Argument::flag)?.is_some();
 		let name = name?.string()?;
 		let param_kind = parse_param_kind(param_kind)?;
 		let with_extensions = optional(with_extensions, Argument::flag)?.is_some();
+		let deny_array = optional(deny_array, Argument::flag)?.is_some();
+
+		if deny_array && param_kind == ParamKind::Array {
+			return Err(syn::Error::new(method.sig.span(), "Array param kind is incompatible with deny_array. Use Map param kind instead or remove the deny_array attribute."));
+		}
 
 		let docs = extract_doc_comments(&method.attrs);
 		let deprecated = match find_attr(&method.attrs, "deprecated") {
@@ -168,6 +174,7 @@ impl RpcMethod {
 			docs,
 			deprecated,
 			with_extensions,
+			deny_array,
 		})
 	}
 }
